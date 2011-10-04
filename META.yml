@@ -1,10 +1,10 @@
 --- #YAML:1.0
 name:               Plack-Middleware-ExtDirect
-version:            1.02
+version:            1.03
 abstract:           RPC::ExtDirect gateway for Plack environment
 author:
     - Alexander Tokarev <nohuhu@apple.com>
-license:            unknown
+license:            perl
 distribution_type:  module
 configure_requires:
     ExtUtils::MakeMaker:  0
@@ -12,7 +12,7 @@ build_requires:
     ExtUtils::MakeMaker:  0
 requires:
     Plack:           0.9982
-    RPC::ExtDirect:  1.10
+    RPC::ExtDirect:  1.20
     Test::More:      0
 no_index:
     directory:
