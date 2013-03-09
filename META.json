@@ -4,7 +4,7 @@
       "Alexander Tokarev <tokarev@cpan.org>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.62, CPAN::Meta::Converter version 2.112150",
+   "generated_by" : "ExtUtils::MakeMaker version 6.64, CPAN::Meta::Converter version 2.120921",
    "license" : [
       "perl_5"
    ],
@@ -22,18 +22,18 @@
    "prereqs" : {
       "build" : {
          "requires" : {
-            "Test::More" : 0
+            "Test::More" : "0"
          }
       },
       "configure" : {
          "requires" : {
-            "ExtUtils::MakeMaker" : 0
+            "ExtUtils::MakeMaker" : "0"
          }
       },
       "runtime" : {
          "requires" : {
             "Plack" : "0.9988",
-            "RPC::ExtDirect" : "2.00"
+            "RPC::ExtDirect" : "2.12"
          }
       }
    },
@@ -46,5 +46,5 @@
          "url" : "http://github.com/nohuhu/Plack-Middleware-ExtDirect"
       }
    },
-   "version" : "2.00"
+   "version" : "2.01"
 }
