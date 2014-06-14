@@ -1,10 +1,10 @@
 {
-   "abstract" : "RPC::ExtDirect gateway for Plack environment",
+   "abstract" : "RPC::ExtDirect gateway for Plack",
    "author" : [
-      "Alexander Tokarev <tokarev@cpan.org>"
+      "Alex Tokarev <tokarev@cpan.org>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.64, CPAN::Meta::Converter version 2.120921",
+   "generated_by" : "ExtUtils::MakeMaker version 6.98, CPAN::Meta::Converter version 2.140640",
    "license" : [
       "perl_5"
    ],
@@ -32,8 +32,8 @@
       },
       "runtime" : {
          "requires" : {
-            "Plack" : "0.9988",
-            "RPC::ExtDirect" : "2.12"
+            "Plack" : "1.0",
+            "RPC::ExtDirect" : "3.0"
          }
       }
    },
@@ -46,5 +46,5 @@
          "url" : "http://github.com/nohuhu/Plack-Middleware-ExtDirect"
       }
    },
-   "version" : "2.01"
+   "version" : "3.00"
 }

@@ -2,70 +2,58 @@ package Plack::Middleware::ExtDirect;
 
 use parent 'Plack::Middleware';
 
-# ABSTRACT: Ext.Direct gateway implementation for Plack
-
 use strict;
 use warnings;
 no  warnings 'uninitialized';       ## no critic
 
+use Carp;
 use IO::File;
 
 use Plack::Request;
 use Plack::Util;
-use Plack::Util::Accessor qw( api_path      router_path
-                              poll_path     namespace
-                              remoting_var  polling_var
-                              auto_connect  debug
-                              no_polling    before
-                              instead       after
-                              router        event_provider
-                            );
 
+use RPC::ExtDirect::Util::Accessor;
 use RPC::ExtDirect::Config;
 use RPC::ExtDirect::API;
-use RPC::ExtDirect::Router;
-use RPC::ExtDirect::EventProvider;
+use RPC::ExtDirect;
+
+#
+# This module is not compatible with RPC::ExtDirect < 3.0
+#
+
+croak __PACKAGE__." requires RPC::ExtDirect 3.0+"
+    if $RPC::ExtDirect::VERSION lt '3.0';
 
 ### PACKAGE GLOBAL VARIABLE ###
 #
 # Version of the module
 #
 
-our $VERSION = '2.01';
+our $VERSION = '3.00';
 
 ### PUBLIC INSTANCE METHOD (CONSTRUCTOR) ###
 #
 # Instantiates a new Plack::Middleware::ExtDirect object
 #
 
-my %DEFAULT_FOR = (
-    api_path       => '/extdirect_api',
-    router_path    => '/extdirect_router',
-    poll_path      => '/extdirect_events',
-    remoting_var   => 'Ext.app.REMOTING_API',
-    polling_var    => 'Ext.app.POLLING_API',
-    namespace      => '',
-    auto_connect   => 0,
-    debug          => 0,
-    no_polling     => 0,
-    before         => undef,
-    instead        => undef,
-    after          => undef,
-    router         => 'RPC::ExtDirect::Router',
-    event_provider => 'RPC::ExtDirect::EventProvider',
-);
-
 sub new {
     my $class = shift;
-
-    my $self = $class->SUPER::new(@_);
-
-    # Set some defaults
-    for my $option ( keys %DEFAULT_FOR ) {
-        $self->{ $option } = $DEFAULT_FOR{ $option }
-            unless defined $self->$option;
-    };
-
+    
+    my %params = @_ == 1 && 'HASH' eq ref($_[0]) ? %{ $_[0] } : @_;
+    
+    my $api    = delete $params{api}    || RPC::ExtDirect->get_api();
+    my $config = delete $params{config} || $api->config;
+    
+    # These two are not method calls, they need to do their stuff *before*
+    # we have found $self
+    _decorate_config($config);
+    _process_params($api, $config, \%params);
+    
+    my $self = $class->SUPER::new(%params);
+    
+    $self->config($config);
+    $self->api($api);
+    
     return $self;
 }
 
@@ -76,19 +64,85 @@ sub new {
 
 sub call {
     my ($self, $env) = @_;
+    
+    my $config = $self->config;
 
-    # Run the relevant handler
+    # Run the relevant handler. Router calls are the most frequent
+    # so we test for them first
     for ( $env->{PATH_INFO} ) {
-        return $self->_handle_api($env)    if $_ =~ $self->api_path;
-        return $self->_handle_router($env) if $_ =~ $self->router_path;
-        return $self->_handle_events($env) if $_ =~ $self->poll_path;
+        return $self->_handle_router($env) if $_ =~ $config->router_path;
+        return $self->_handle_events($env) if $_ =~ $config->poll_path;
+        return $self->_handle_api($env)    if $_ =~ $config->api_path;
     };
 
     # Not our URI, fall through
     return $self->app->($env);
 }
 
+### PUBLIC INSTANCE METHODS ###
+#
+# Read-write accessors
+#
+
+RPC::ExtDirect::Util::Accessor->mk_accessors(
+    simple => [qw/ api config /],
+);
+
 ############## PRIVATE METHODS BELOW ##############
+
+### PRIVATE PACKAGE SUBROUTINE ###
+#
+# Decorate a Config object with __PACKAGE__-specific accessors
+#
+
+sub _decorate_config {
+    my ($config) = @_;
+    
+    $config->add_accessors(
+        overwrite => 1,
+        complex   => [{
+            accessor => 'router_class_plack',
+            fallback => 'router_class',
+        }, {
+            accessor => 'eventprovider_class_plack',
+            fallback => 'eventprovider_class',
+        }],
+    );
+}
+
+### PRIVATE PACKAGE SUBROUTINE ###
+#
+# Process parameters directly passed to the constructor
+# and set the Config/API options accordingly
+#
+
+sub _process_params {
+    my ($api, $config, $params) = @_;
+    
+    # We used to accept these parameters directly in the constructor;
+    # this behavior is not recommended now but it doesn't make much sense
+    # to deprecate it either
+    my @compat_params = qw/
+        api_path router_path poll_path namespace remoting_var polling_var
+        auto_connect debug no_polling
+    /;
+    
+    for my $var ( @compat_params ) {
+        $config->$var( delete $params->{$var} ) if exists $params->{$var};
+    }
+    
+    $config->router_class_plack( delete $params->{router} )
+        if exists $params->{router};
+    
+    $config->eventprovider_class_plack( delete $params->{event_provider} )
+        if exists $params->{event_provider};
+    
+    for my $type ( $api->HOOK_TYPES ) {
+        my $code = delete $params->{ $type } if exists $params->{ $type };
+        
+        $api->add_hook( type => $type, code => $code ) if defined $code;
+    }
+}
 
 ### PRIVATE INSTANCE METHOD ###
 #
@@ -98,21 +152,10 @@ sub call {
 sub _handle_api {
     my ($self, $env) = @_;
 
-    # Set the debug flag first
-    local $RPC::ExtDirect::API::DEBUG = $self->debug;
-
-    # Set up RPC::ExtDirect::API environment
-    {
-        my @vars = qw(namespace auto_connect router_path poll_path
-                      remoting_var polling_var no_polling before
-                      instead after);
-
-        my @env = map { defined $self->$_ ? ($_ => $self->$_) : () } @vars;
-        RPC::ExtDirect::API->import(@env);
-    }
-
-    # Get the API JavaScript
-    my $js = eval { RPC::ExtDirect::API->get_remoting_api() };
+    # Get the API JavaScript chunk
+    my $js = eval {
+        $self->api->get_remoting_api( config => $self->config )
+    };
 
     # If JS API call failed, return error
     return $self->_error_response if $@;
@@ -138,18 +181,14 @@ sub _handle_api {
 sub _handle_router {
     my ($self, $env) = @_;
     
-    my $router = $self->router;
-    
-    no strict 'refs';
-
-    # This insanity is going away sometime soon...
-    local ${$router.'::DEBUG'} = $self->debug;
-
     # Throw an error if any method but POST is used
     return $self->_error_response
         unless $env->{REQUEST_METHOD} eq 'POST';
+    
+    my $config = $self->config;
+    my $api    = $self->api;
 
-    # Now we need Request object
+    # Now we need a Request object
     my $req = Plack::Request->new($env);
 
     # Try to distinguish between raw POST and form call
@@ -159,30 +198,19 @@ sub _handle_router {
     return $self->_error_response unless defined $router_input;
 
     # Rebless request as our environment object for compatibility
-    bless $req, 'Plack::Middleware::ExtDirect::Env';
-
+    bless $req, __PACKAGE__.'::Env';
+    
+    my $router_class = $config->router_class_plack;
+    
+    eval "require $router_class";
+    
+    my $router = $router_class->new(
+        config => $config,
+        api    => $api,
+    );
+    
     # Routing requests is safe (Router won't croak under torture)
     my $result = $router->route($router_input, $req);
-
-    # Older RPC::ExtDirect version returned two-element array
-    if ( $RPC::ExtDirect::VERSION < 2.00 ) {
-        my $content_type = $result->[0];
-        my $http_body    = $result->[1];
-
-        my $content_length
-            = do { no warnings; use bytes; length $http_body; };
-
-        $result = [
-            200,
-            [
-                'Content-Type',   $content_type,
-                'Content-Length', $content_length,
-            ],
-            [
-                $http_body,
-            ],
-        ];
-    };
 
     return $result;
 }
@@ -195,18 +223,23 @@ sub _handle_router {
 sub _handle_events {
     my ($self, $env) = @_;
     
-    my $provider = $self->event_provider;
-    
-    no strict 'refs';
-
-    # This is also insane, needs refactoring ASAP
-    local ${$provider.'::DEBUG'} = $self->debug;
-
     # Only GET and POST methods are supported for polling
     return $self->_error_response
         if $env->{REQUEST_METHOD} !~ / \A (GET|POST) \z /xms;
 
     my $req = Plack::Middleware::ExtDirect::Env->new($env);
+    
+    my $config = $self->config;
+    my $api    = $self->api;
+    
+    my $provider_class = $config->eventprovider_class_plack;
+    
+    eval "require $provider_class";
+    
+    my $provider = $provider_class->new(
+        config => $config,
+        api    => $api,
+    );
 
     # Polling for Events is safe
     my $http_body = $provider->poll($req);
@@ -280,7 +313,7 @@ sub _extract_post_data {
     # Remove extType because it's meaningless later on
     delete $keyword{ extType };
 
-    # Fix TID so that it comes as number (JavaScript is picky)
+    # Fix TID so that it comes as a number (JavaScript is picky)
     $keyword{ extTID } += 0 if exists $keyword{ extTID };
 
     return \%keyword;
@@ -317,7 +350,8 @@ sub _format_uploads {
 sub _error_response { [ 500, [ 'Content-Type' => 'text/html' ], [] ] }
 
 # Small utility class
-package Plack::Middleware::ExtDirect::Env;
+package
+    Plack::Middleware::ExtDirect::Env;
 
 use parent 'Plack::Request';
 
@@ -349,130 +383,3 @@ sub cookie {
 }
 
 1;
-
-__END__
-
-=pod
-
-=head1 NAME
-
-Plack::Middleware::ExtDirect - RPC::ExtDirect gateway for Plack
-
-=head1 SYNOPSIS
-
-In your plackup, before C<Plack::Runner-E<gt>run()>:
-
- use My::Server::Side::Class;
- use My::Server::Side::Class2;
-
-In your app.psgi:
-
- my $app = sub { ... };
- 
- builder {
-    enable 'ExtDirect', api_path     => '/extdirect_api',
-                        router_path  => '/extdirect_router',
-                        poll_path    => '/extdirect_events',
-                        remoting_var => 'Ext.app.REMOTING_API',
-                        polling_var  => 'Ext.app.POLLING_API',
-                        namespace    => 'myApp',    # Defaults to empty
-                        auto_connect => 0,
-                        no_polling   => 0,
-                        debug        => 0,
-                        before       => \&global_before_hook,
-                        after        => \&global_after_hook,
-                        ;
-    $app;
- }
-
-=head1 DESCRIPTION
-
-This module provides RPC::ExtDirect gateway implementation for Plack
-environment. It is packaged as standard Plack middleware component
-suitable for use with Plack::Builder.
-
-You can change some default configuration options by passing
-corresponding parameters like shown above. For the meaning of parameters,
-see L<RPC::ExtDirect::API> documentation.
-
-Note that Ext.Direct specification requires server side implementation
-to return diagnostic messages only when debugging is explicitly turned
-on. This is why C<debug> flag defaults to 'off' and RPC::ExtDirect
-returns generic error messages that do not contain any details as to
-where and what error has happened.
-
-=head1 CAVEATS
-
-=head2 Attribute handlers
-
-For RPC::ExtDirect attribute handlers to work properly, modules that
-expose ExtDirect Methods should be loaded at compile time. On the other
-hand, Plack::Runner loads and compiles code in *.psgi at runtime, and
-that breaks attribute magic dust. To avoid this, make sure you load
-all modules that provide Ext.Direct functionality - including Event
-providers - before Plack::Runner starts. The easiest way to do this
-is to copy plackup script and modify it a little to C<use>
-all relevant modules in it.
-
-See included code examples to see how it works.
-
-=head2 Environment object
-
-For Plack Ext.Direct gateway, the environment object is based on
-Plack::Request. While it does provide the same methods described
-in L<RPC::ExtDirect/ENVIRONMENT OBJECTS>, behavior of these methods
-can be slightly different from CGI environment. For example,
-C<$env-E<gt>http()> in CGI will return the list of both environment
-variables and HTTP headers in upper case, while the same
-C<$env-E<gt>http()> in Plack application will return only HTTP headers
-as they were defined in HTTP spec. To avoid problems, always find
-the actual header name first and then use it:
-
-    my ($header) = grep { /^Content[-_]Type$/i } $env->http();
-    my $value    = $env->http($header) if $header;
-    
-    ...
-
-=head1 DEPENDENCIES
-
-Plack::Middleware::ExtDirect is dependent on the following modules:
-L<Plack>, L<RPC::ExtDirect>, L<JSON>, L<Attribute::Handlers>.
-
-=head1 SEE ALSO
-
-For more information on core functionality see L<RPC::ExtDirect>.
-
-For more information on Ext.Direct API see specification:
-L<http://www.sencha.com/products/extjs/extdirect/> and documentation:
-L<http://docs.sencha.com/ext-js/4-0/#!/api/Ext.direct.Manager>.
-
-See included ExtJS examples for ideas on what Ext.Direct is and how to
-use it.
-
-=head1 BUGS AND LIMITATIONS
-
-There are no known bugs in this module. To report bugs, use github RT
-(the best way) or just drop me an e-mail. Patches are welcome.
-
-=head1 AUTHOR
-
-Alexander Tokarev E<lt>tokarev@cpan.orgE<gt>
-
-=head1 ACKNOWLEDGEMENTS
-
-I would like to thank IntelliSurvey, Inc for sponsoring my work
-on version 2.0 of RPC::ExtDirect suite of modules.
-
-=head1 COPYRIGHT AND LICENSE
-
-Copyright (c) 2011-2012 Alexander Tokarev.
-
-This module is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself. See L<perlartistic>.
-
-Included ExtJS examples are copyright (c) 2011, Sencha Inc. Example code is
-used and distributed under GPL 3.0 license as provided by Sencha Inc. See
-L<http://www.sencha.com/license>
-
-=cut
-
