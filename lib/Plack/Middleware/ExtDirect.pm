@@ -29,7 +29,7 @@ croak __PACKAGE__." requires RPC::ExtDirect 3.0+"
 # Version of the module
 #
 
-our $VERSION = '3.00';
+our $VERSION = '3.01';
 
 ### PUBLIC INSTANCE METHOD (CONSTRUCTOR) ###
 #
@@ -251,7 +251,7 @@ sub _handle_events {
     return [
                 200,
                 [
-                    'Content-Type'   => 'application/json; charset=utf8',
+                    'Content-Type'   => 'application/json; charset=utf-8',
                     'Content-Length' => $content_length,
                 ],
                 [ $http_body ],
